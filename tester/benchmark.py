@@ -1,27 +1,30 @@
 import time
 import subprocess
 import re
+import uuid
 from openai import OpenAI
 
 # --- CONFIGURATION ---
 API_BASE_URL = "http://127.0.0.1:8000/v1" 
 API_KEY = "1234"
 
+# Testing all three quantization methods to see how your M1 handles them
 MODELS_TO_TEST = [
-    "gemma-4-E4B-it-UD-MLX-4bit"
+    "gemma-4-E4B-it-UD-MLX-4bit",
+    "gemma-4-e4b-it-OptiQ-4bit",
+    "gemma-4-E4B-it-MLX-4bit"
 ]
 
-# A strictly deterministic prompt
+# A new deterministic prompt (Factorial of 10)
 TEST_PROMPT = """
-Write a Python script that calculates the 25th Fibonacci number.
-Assume F(1) = 1 and F(2) = 1.
+Write a Python script that calculates the factorial of 10 (10!).
 The script must print ONLY the final result exactly in this format:
 Output: <number>
 Do not print intermediate steps.
 """
 
-# What we actually expect the model's program to print
-EXPECTED_OUTPUT = "Output: 75025"
+# 10! is 3628800
+EXPECTED_OUTPUT = "Output: 3628800"
 # ---------------------
 
 def extract_python_code(text):
@@ -34,12 +37,12 @@ def extract_python_code(text):
 def run_benchmark():
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
-    print("🚀 Starting Deterministic LLM Benchmark...\n")
+    print("🚀 Starting Cache-Busting Deterministic Benchmark...\n")
     
     for model_name in MODELS_TO_TEST:
-        print("-" * 50)
-        print(f"Testing Model: {model_name}")
-        print("-" * 50)
+        print("=" * 60)
+        print(f"🧪 Testing Model: {model_name}")
+        print("=" * 60)
         
         try:
             start_time = time.time()
@@ -47,10 +50,18 @@ def run_benchmark():
             token_count = 0
             full_response = ""
             
+            # --- THE CACHE BUSTER ---
+            # Appending a random UUID guarantees the prompt hash is unique every run.
+            # This forces the M1 to process the prompt from scratch, ignoring the SSD KV cache.
+            unique_id = str(uuid.uuid4())
+            system_prompt = f"You are an expert Python developer. Output only valid, runnable code. [CACHE_MISS_ID: {unique_id}]"
+            
+            print(f"🧹 Cache Buster Injected: {unique_id[:8]}...")
+            
             response = client.chat.completions.create(
                 model=model_name,
                 messages=[
-                    {"role": "system", "content": "You are an expert Python developer. Output only valid, runnable code."},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": TEST_PROMPT}
                 ],
                 stream=True
@@ -95,7 +106,6 @@ def run_benchmark():
                 timeout=15 
             )
             
-            # --- THE NEW VALIDATION LOGIC ---
             if result.returncode == 0:
                 stdout_lower = result.stdout.strip().lower()
                 expected_lower = EXPECTED_OUTPUT.lower()
@@ -105,17 +115,18 @@ def run_benchmark():
                 print("-" * 40)
                 
                 if expected_lower in stdout_lower:
-                    print("✅ RESULT: PASS - Code ran and produced the exact correct answer!")
+                    print("✅ RESULT: PASS - Logic flawless!")
                 else:
-                    print("❌ RESULT: FAIL (Logic Error) - Code ran, but answer was wrong.")
-                    print(f"Expected to find: '{EXPECTED_OUTPUT}'")
+                    print("❌ RESULT: FAIL (Logic Error)")
+                    print(f"Expected: '{EXPECTED_OUTPUT}'")
             else:
                 print("❌ RESULT: FAIL (Syntax/Runtime Error) - The code crashed.")
                 print("----------------------------------------")
                 print(result.stderr.strip())
                 print("----------------------------------------")
 
-            time.sleep(2)
+            # Let the unified memory breathe for a few seconds before loading the next weights
+            time.sleep(3)
 
         except subprocess.TimeoutExpired:
             print("\n⚠️ RESULT: FAIL (Timeout) - Code got stuck in an infinite loop.")
