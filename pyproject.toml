@@ -14,3 +14,6 @@ dependencies = [
 [project.scripts]
 # This creates the global terminal command "tester"
 tester = "tester.benchmark:run_benchmark"
+
+[tool.setuptools]
+packages = ["tester"]

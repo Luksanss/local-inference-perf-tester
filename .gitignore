@@ -47,4 +47,5 @@ dist/
 # Benchmark Generated Files
 # =========================
 # Ignore the temporary Python scripts created during testing
-generated_*.py
+
+results/
