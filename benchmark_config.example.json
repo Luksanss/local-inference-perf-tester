@@ -1,0 +1,15 @@
+{
+  "API_BASE_URL": "http://127.0.0.1:8000/v1",
+  "API_KEY": "1234",
+  "MODELS_TO_TEST": [
+    "gemma-4-E4B-it-MLX-4bit",
+    "gemma-4-E4B-it-UD-MLX-4bit",
+    "gemma-4-E2B-it-UD-MLX-4bit",
+    "gemma-4-e2b-it-4bit",
+    "Llama-3.1-8B-Instruct-4bit",
+    "Meta-Llama-3.1-8B-Instruct-abliterated-4bit",
+    "Qwen2.5-Coder-7B-Instruct-4bit",
+    "Qwen2.5-Coder-7B-Instruct-MLX-4bit",
+    "Phi-3.5-mini-instruct-4bit"
+  ]
+}

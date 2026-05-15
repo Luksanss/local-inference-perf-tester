@@ -4,17 +4,26 @@ import re
 import uuid
 import csv
 import os
+import json
 from openai import OpenAI
 
 # --- CONFIGURATION ---
-API_BASE_URL = "http://127.0.0.1:8000/v1" 
-API_KEY = "1234"
+CONFIG_FILE = "benchmark_config.json"
 
-MODELS_TO_TEST = [
-    "gemma-4-E4B-it-UD-MLX-4bit",
-    "gemma-4-e4b-it-OptiQ-4bit",
-    "gemma-4-E4B-it-MLX-4bit"
-]
+if not os.path.exists(CONFIG_FILE):
+    print(f"❌ Error: {CONFIG_FILE} is missing! Please create it.")
+    exit(1)
+
+with open(CONFIG_FILE, "r") as f:
+    config = json.load(f)
+
+API_BASE_URL = config.get("API_BASE_URL", "http://127.0.0.1:8000/v1")
+API_KEY = config.get("API_KEY", "1234")
+MODELS_TO_TEST = config.get("MODELS_TO_TEST", [])
+
+if not MODELS_TO_TEST:
+    print("❌ Error: MODELS_TO_TEST array is empty in the config file.")
+    exit(1)
 
 TEST_PROMPT = """
 Write a Python script that calculates the factorial of 10 (10!).
@@ -23,8 +32,6 @@ Output: <number>
 Do not print intermediate steps.
 """
 EXPECTED_OUTPUT = "Output: 3628800"
-
-# Base directory for all test runs
 RESULTS_BASE_DIR = "results"
 # ---------------------
 

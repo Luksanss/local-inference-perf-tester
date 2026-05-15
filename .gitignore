@@ -47,5 +47,9 @@ dist/
 # Benchmark Generated Files
 # =========================
 # Ignore the temporary Python scripts created during testing
-
 results/
+
+# =========================
+# Configuration
+# =========================
+benchmark_config.json
