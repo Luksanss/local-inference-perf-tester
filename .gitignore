@@ -1,0 +1,50 @@
+# =========================
+# Python
+# =========================
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# =========================
+# Build & Packaging
+# =========================
+# When you run `pip3 install -e .`, it generates this folder:
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# =========================
+# macOS
+# =========================
+# Custom folder attributes and Spotlight indexes
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# =========================
+# IDEs & Editors
+# =========================
+# VS Code
+.vscode/
+# JetBrains / PyCharm
+.idea/
+# Vim
+*.swp
+*.swo
+
+# =========================
+# Benchmark Generated Files
+# =========================
+# Ignore the temporary Python scripts created during testing
+generated_*.py
