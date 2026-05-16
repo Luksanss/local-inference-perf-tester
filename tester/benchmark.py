@@ -34,7 +34,7 @@ def load_config(config_path: str) -> Dict[str, Any]:
 
 
 def generate_haystack_prompt(base_prompt: str) -> str:
-    """Dynamically generates a ~14k token payload to test context limits."""
+    """Dynamically generates a ~15k token payload to test context limits."""
     if "{{HAYSTACK_PAYLOAD}}" not in base_prompt:
         return base_prompt
         
@@ -92,64 +92,83 @@ def run_single_test(client: OpenAI, model: str, benchmark: Dict[str, Any], scrip
     start_time = time.time()
     first_token_time = None
     
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": "You are an expert Python developer. Output only valid, runnable code."},
-            {"role": "user", "content": full_prompt}
-        ],
-        temperature=0.0,
-        max_tokens=1500,  # SAFETY NET: Prevents infinite hallucination loops
-        stream=True,
-        stream_options={"include_usage": True}
-    )
-    
-    with open(LIVE_STREAM_FILE, "a", encoding="utf-8") as sf:
-        sf.write(f"\n\n{'='*50}\n🤖 MODEL: {model}\n⚡ CONFIG: [{bench_id.upper()}]\n{'='*50}\n")
-        sf.flush()
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are an expert Python developer. Output only valid, runnable code."},
+                {"role": "user", "content": full_prompt}
+            ],
+            temperature=0.0,
+            max_tokens=1500,  # SAFETY NET
+            stream=True,
+            stream_options={"include_usage": True}
+        )
         
-        for chunk in response:
-            # --- MANUAL OVERRIDE (Kill Switch) ---
-            # Checks sys.stdin to see if you hit Enter in Terminal 2
-            if sys.stdin in select.select([sys.stdin], [], [], 0.0)[0]:
-                sys.stdin.readline()  # Consume the keypress
-                sf.write("\n\n[🛑 MANUAL OVERRIDE: SKIPPED BY USER]\n")
-                sf.flush()
-                
-                # Estimate prompt tokens if we aborted before the final usage chunk arrived
-                if prompt_tokens == 0:
-                    prompt_tokens = len(full_prompt) // 4
-                    
-                ttft = (first_token_time - start_time) if first_token_time else 0.0
-                tps = (completion_tokens - 1) / (time.time() - first_token_time) if first_token_time and completion_tokens > 1 else 0.0
-                prefill_tps = prompt_tokens / ttft if ttft > 0 else 0.0
-                
-                return {
-                    "status": "⏭️",  # Visually distinct skip icon
-                    "tps": tps,
-                    "prefill_tps": prefill_tps,
-                    "ttft": ttft,
-                    "total_time": time.time() - start_time,
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                    "total_context": prompt_tokens + completion_tokens
-                }
-            # -------------------------------------
-
-            if hasattr(chunk, 'usage') and chunk.usage is not None:
-                prompt_tokens = chunk.usage.prompt_tokens
-                
-            if chunk.choices and len(chunk.choices) > 0:
-                content = chunk.choices[0].delta.content
-                if content:
-                    if first_token_time is None:
-                        first_token_time = time.time()
-                        
-                    collected_chunks.append(content)
-                    completion_tokens += 1
-                    sf.write(content)
+        with open(LIVE_STREAM_FILE, "a", encoding="utf-8") as sf:
+            sf.write(f"\n\n{'='*50}\n🤖 MODEL: {model}\n⚡ CONFIG: [{bench_id.upper()}]\n{'='*50}\n")
+            sf.flush()
+            
+            for chunk in response:
+                # --- MANUAL OVERRIDE (Kill Switch) ---
+                if sys.stdin in select.select([sys.stdin], [], [], 0.0)[0]:
+                    sys.stdin.readline()  
+                    sf.write("\n\n[🛑 MANUAL OVERRIDE: SKIPPED BY USER]\n")
                     sf.flush()
                     
+                    if prompt_tokens == 0:
+                        prompt_tokens = len(full_prompt) // 4
+                        
+                    ttft = (first_token_time - start_time) if first_token_time else 0.0
+                    tps = (completion_tokens - 1) / (time.time() - first_token_time) if first_token_time and completion_tokens > 1 else 0.0
+                    prefill_tps = prompt_tokens / ttft if ttft > 0 else 0.0
+                    
+                    return {
+                        "status": "⏭️", 
+                        "tps": tps,
+                        "prefill_tps": prefill_tps,
+                        "ttft": ttft,
+                        "total_time": time.time() - start_time,
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "total_context": prompt_tokens + completion_tokens
+                    }
+                # -------------------------------------
+
+                if hasattr(chunk, 'usage') and chunk.usage is not None:
+                    prompt_tokens = chunk.usage.prompt_tokens
+                    
+                if chunk.choices and len(chunk.choices) > 0:
+                    content = chunk.choices[0].delta.content
+                    if content:
+                        if first_token_time is None:
+                            first_token_time = time.time()
+                            
+                        collected_chunks.append(content)
+                        completion_tokens += 1
+                        sf.write(content)
+                        sf.flush()
+                        
+    except Exception as e:
+        # CATCH BACKEND CRASHES (e.g., httpx.RemoteProtocolError)
+        with open(LIVE_STREAM_FILE, "a", encoding="utf-8") as sf:
+            sf.write(f"\n\n[💥 SERVER CONNECTION LOST: {str(e)}]\n")
+            
+        ttft = (first_token_time - start_time) if first_token_time else 0.0
+        if prompt_tokens == 0:
+            prompt_tokens = len(full_prompt) // 4
+            
+        return {
+            "status": "💥 (Crash)",
+            "tps": 0.0,
+            "prefill_tps": 0.0,
+            "ttft": ttft,
+            "total_time": time.time() - start_time,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_context": prompt_tokens + completion_tokens
+        }
+
     end_time = time.time()
     raw_content = "".join(collected_chunks)
     
@@ -202,7 +221,6 @@ def run_single_test(client: OpenAI, model: str, benchmark: Dict[str, Any], scrip
         "completion_tokens": completion_tokens,
         "total_context": total_context
     }
-
 
 def generate_reports(matrix_results: Dict[str, Dict[str, Any]], benchmarks: List[Dict[str, Any]], run_dir: str) -> None:
     csv_path = os.path.join(run_dir, "benchmark_results.csv")
