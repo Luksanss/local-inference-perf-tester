@@ -7,6 +7,8 @@ import os
 import json
 import random
 import string
+import sys
+import select
 from typing import Dict, List, Any
 from openai import OpenAI
 
@@ -37,14 +39,12 @@ def generate_haystack_prompt(base_prompt: str) -> str:
         return base_prompt
         
     payload = []
-    # Reduced to 300 objects. Safely targets ~12k-15k tokens.
     for i in range(300):
         payload.append({
             "id": f"SYS-{i}",
             "hash": "".join(random.choices(string.ascii_letters + string.digits, k=32))
         })
     
-    # Bury the needle deep inside the context
     payload.insert(180, {
         "id": "N33DLE",
         "secret": "OMEGA_PROTOCOL_88"
@@ -99,6 +99,7 @@ def run_single_test(client: OpenAI, model: str, benchmark: Dict[str, Any], scrip
             {"role": "user", "content": full_prompt}
         ],
         temperature=0.0,
+        max_tokens=1500,  # SAFETY NET: Prevents infinite hallucination loops
         stream=True,
         stream_options={"include_usage": True}
     )
@@ -108,6 +109,33 @@ def run_single_test(client: OpenAI, model: str, benchmark: Dict[str, Any], scrip
         sf.flush()
         
         for chunk in response:
+            # --- MANUAL OVERRIDE (Kill Switch) ---
+            # Checks sys.stdin to see if you hit Enter in Terminal 2
+            if sys.stdin in select.select([sys.stdin], [], [], 0.0)[0]:
+                sys.stdin.readline()  # Consume the keypress
+                sf.write("\n\n[🛑 MANUAL OVERRIDE: SKIPPED BY USER]\n")
+                sf.flush()
+                
+                # Estimate prompt tokens if we aborted before the final usage chunk arrived
+                if prompt_tokens == 0:
+                    prompt_tokens = len(full_prompt) // 4
+                    
+                ttft = (first_token_time - start_time) if first_token_time else 0.0
+                tps = (completion_tokens - 1) / (time.time() - first_token_time) if first_token_time and completion_tokens > 1 else 0.0
+                prefill_tps = prompt_tokens / ttft if ttft > 0 else 0.0
+                
+                return {
+                    "status": "⏭️",  # Visually distinct skip icon
+                    "tps": tps,
+                    "prefill_tps": prefill_tps,
+                    "ttft": ttft,
+                    "total_time": time.time() - start_time,
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_context": prompt_tokens + completion_tokens
+                }
+            # -------------------------------------
+
             if hasattr(chunk, 'usage') and chunk.usage is not None:
                 prompt_tokens = chunk.usage.prompt_tokens
                 
@@ -129,18 +157,15 @@ def run_single_test(client: OpenAI, model: str, benchmark: Dict[str, Any], scrip
     total_time = end_time - start_time
     ttft = (first_token_time - start_time) if first_token_time else 0.0
     
-    # Generate Speed (TPS)
     if first_token_time and completion_tokens > 1:
         generation_time = end_time - first_token_time
         tps = (completion_tokens - 1) / generation_time
     else:
         tps = 0.0
         
-    # Fallback for prompt tokens if missing
     if prompt_tokens == 0:
         prompt_tokens = len(full_prompt) // 4
         
-    # Prefill Speed (TPS)
     if ttft > 0:
         prefill_tps = prompt_tokens / ttft
     else:
@@ -238,7 +263,6 @@ def generate_reports(matrix_results: Dict[str, Dict[str, Any]], benchmarks: List
                     c_k = m['completion_tokens'] / 1000
                     t_k = m['total_context'] / 1000
                     
-                    # Condensed layout for readability
                     speed_str = f"Gen: {m['tps']:.1f} t/s"
                     prefill_str = f"Prefill: {int(m['prefill_tps'])} t/s"
                     ctx_str = f"Ctx: {p_k:.1f}k+{c_k:.1f}k={t_k:.1f}k"
@@ -275,6 +299,7 @@ def run_benchmark():
     print("🚀 Starting Automated Multi-Level Matrix Benchmark...")
     print(f"📁 Target Run Directory: {run_dir}/")
     print(f"📺 Live stream pipeline opened at: ./{LIVE_STREAM_FILE}\n")
+    print("💡 Pro-Tip: Press [ENTER] at any time during a test to force-skip it.\n")
     
     for model in models:
         print("=" * 60)
@@ -309,7 +334,10 @@ def run_benchmark():
             metrics = run_single_test(client, model, bench, scripts_dir)
             matrix_results[model][bench_id] = metrics
             
-            print(f"    Result: {metrics['status']} | Gen Speed: {metrics['tps']:.2f} t/s | Prefill: {int(metrics['prefill_tps'])} t/s | TTFT: {metrics['ttft']:.2f}s | Ctx: {metrics['total_context']/1000:.1f}k tok")
+            if metrics['status'] == "⏭️":
+                print("    Result: ⏭️ SKIPPED | Metrics saved up to interruption.")
+            else:
+                print(f"    Result: {metrics['status']} | Gen Speed: {metrics['tps']:.2f} t/s | Prefill: {int(metrics['prefill_tps'])} t/s | TTFT: {metrics['ttft']:.2f}s | Ctx: {metrics['total_context']/1000:.1f}k tok")
             
         print(f"🧹 Unloading {model} data... breathing for 3s...")
         time.sleep(3)
