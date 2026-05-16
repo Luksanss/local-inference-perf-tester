@@ -53,7 +53,6 @@ def execute_generated_code(script_path: str, timeout: int = 10) -> tuple[int, st
 
 
 def run_single_test(client: OpenAI, model: str, benchmark: Dict[str, Any], scripts_dir: str) -> Dict[str, Any]:
-    """Runs a prompt, streams output, and returns a comprehensive metrics dictionary."""
     bench_id = benchmark["id"]
     prompt = benchmark["prompt"]
     expected = benchmark["expected"]
@@ -61,11 +60,13 @@ def run_single_test(client: OpenAI, model: str, benchmark: Dict[str, Any], scrip
     full_prompt = f"{prompt}\n\n[CACHE_MISS_ID: {uuid.uuid4()}]"
     
     collected_chunks = []
-    token_count = 0
+    completion_tokens = 0
+    prompt_tokens = 0
     
     start_time = time.time()
     first_token_time = None
     
+    # stream_options requests the usage stats in the final streaming chunk
     response = client.chat.completions.create(
         model=model,
         messages=[
@@ -73,7 +74,8 @@ def run_single_test(client: OpenAI, model: str, benchmark: Dict[str, Any], scrip
             {"role": "user", "content": full_prompt}
         ],
         temperature=0.0,
-        stream=True
+        stream=True,
+        stream_options={"include_usage": True}
     )
     
     with open(LIVE_STREAM_FILE, "a", encoding="utf-8") as sf:
@@ -81,6 +83,10 @@ def run_single_test(client: OpenAI, model: str, benchmark: Dict[str, Any], scrip
         sf.flush()
         
         for chunk in response:
+            # Check if this chunk contains the final usage statistics
+            if hasattr(chunk, 'usage') and chunk.usage is not None:
+                prompt_tokens = chunk.usage.prompt_tokens
+                
             if chunk.choices and len(chunk.choices) > 0:
                 content = chunk.choices[0].delta.content
                 if content:
@@ -88,7 +94,7 @@ def run_single_test(client: OpenAI, model: str, benchmark: Dict[str, Any], scrip
                         first_token_time = time.time()
                         
                     collected_chunks.append(content)
-                    token_count += 1
+                    completion_tokens += 1
                     sf.write(content)
                     sf.flush()
                     
@@ -99,11 +105,17 @@ def run_single_test(client: OpenAI, model: str, benchmark: Dict[str, Any], scrip
     total_time = end_time - start_time
     ttft = (first_token_time - start_time) if first_token_time else 0.0
     
-    if first_token_time and token_count > 1:
+    if first_token_time and completion_tokens > 1:
         generation_time = end_time - first_token_time
-        tps = (token_count - 1) / generation_time
+        tps = (completion_tokens - 1) / generation_time
     else:
         tps = 0.0
+        
+    # Fallback if the backend doesn't support stream_options usage reporting
+    if prompt_tokens == 0:
+        prompt_tokens = len(full_prompt) // 4  # Rough English token estimation
+        
+    total_context = prompt_tokens + completion_tokens
     
     # Save script
     code_to_run = extract_python_code(raw_content)
@@ -129,7 +141,9 @@ def run_single_test(client: OpenAI, model: str, benchmark: Dict[str, Any], scrip
         "tps": tps,
         "ttft": ttft,
         "total_time": total_time,
-        "tokens": token_count
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_context": total_context
     }
 
 
@@ -139,12 +153,19 @@ def generate_reports(matrix_results: Dict[str, Dict[str, Any]], benchmarks: List
     
     bench_ids = [b["id"] for b in benchmarks]
     
-    # 1. Detailed CSV Generation
+    # 1. Detailed CSV Generation (Keeps raw integers for precise data analysis)
     with open(csv_path, mode="w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         header = ["Model", "Warmup Status", "Warmup Time (s)"]
         for b_id in bench_ids:
-            header.extend([f"{b_id.upper()} Status", f"{b_id.upper()} TPS", f"{b_id.upper()} TTFT (s)", f"{b_id.upper()} Total Tokens"])
+            header.extend([
+                f"{b_id.upper()} Status", 
+                f"{b_id.upper()} TPS", 
+                f"{b_id.upper()} TTFT (s)", 
+                f"{b_id.upper()} Prompt Tokens",
+                f"{b_id.upper()} Output Tokens",
+                f"{b_id.upper()} Total Context"
+            ])
         writer.writerow(header)
         
         for model, res in matrix_results.items():
@@ -153,17 +174,24 @@ def generate_reports(matrix_results: Dict[str, Dict[str, Any]], benchmarks: List
             for b_id in bench_ids:
                 if b_id in res:
                     m = res[b_id]
-                    row.extend([m["status"], f"{m['tps']:.2f}", f"{m['ttft']:.2f}", m["tokens"]])
+                    row.extend([
+                        m["status"], 
+                        f"{m['tps']:.2f}", 
+                        f"{m['ttft']:.2f}", 
+                        m["prompt_tokens"], 
+                        m["completion_tokens"], 
+                        m["total_context"]
+                    ])
                 else:
-                    row.extend(["N/A", "0.00", "0.00", "0"])
+                    row.extend(["N/A", "0.00", "0.00", "0", "0", "0"])
             writer.writerow(row)
 
-    # 2. Dense, Clean Markdown Generation
+    # 2. Dense, Clean Markdown Generation (Uses .1f kilotoken formatting)
     with open(md_path, mode="w", encoding="utf-8") as f:
         f.write("# 📊 Local Inference Performance - Detailed Matrix Report\n\n")
         f.write(f"> Run Directory / Unix Timestamp: `{os.path.basename(run_dir)}`\n\n")
         
-        columns = ["WARMUP (Load Time)"] + [f"{b_id.upper()} (Status, TPS, TTFT)" for b_id in bench_ids]
+        columns = ["WARMUP (Load Time)"] + [f"{b_id.upper()}<br>(Status, TPS, TTFT, Ctx)" for b_id in bench_ids]
         f.write(f"| Model Name | {' | '.join(columns)} |\n")
         f.write(f"| :--- | {' | '.join([':---'] * len(columns))} |\n")
         
@@ -174,7 +202,16 @@ def generate_reports(matrix_results: Dict[str, Dict[str, Any]], benchmarks: List
             for b_id in bench_ids:
                 if b_id in res:
                     m = res[b_id]
-                    cells.append(f"{m['status']} {m['tps']:.1f} t/s (TTFT: {m['ttft']:.2f}s)")
+                    
+                    # Convert to kilotokens (k)
+                    p_k = m['prompt_tokens'] / 1000
+                    c_k = m['completion_tokens'] / 1000
+                    t_k = m['total_context'] / 1000
+                    
+                    # Example format: Ctx: 0.1k+0.2k=0.3k tok
+                    ctx_str = f"Ctx: {p_k:.1f}k+{c_k:.1f}k={t_k:.1f}k tok"
+                    
+                    cells.append(f"{m['status']} {m['tps']:.1f} t/s<br>`TTFT: {m['ttft']:.2f}s`<br>`{ctx_str}`")
                 else:
                     cells.append("N/A")
             
@@ -242,7 +279,8 @@ def run_benchmark():
             metrics = run_single_test(client, model, bench, scripts_dir)
             matrix_results[model][bench_id] = metrics
             
-            print(f"    Result: {metrics['status']} | Speed: {metrics['tps']:.2f} t/s | TTFT: {metrics['ttft']:.2f}s | Tokens: {metrics['tokens']}")
+            # Print terminal status in standard format so it's precise, but visually distinct
+            print(f"    Result: {metrics['status']} | Speed: {metrics['tps']:.2f} t/s | TTFT: {metrics['ttft']:.2f}s | Ctx: {metrics['total_context']/1000:.1f}k tok")
             
         print(f"🧹 Unloading {model} data... breathing for 3s...")
         time.sleep(3)
