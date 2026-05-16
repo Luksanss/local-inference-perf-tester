@@ -5,184 +5,222 @@ import uuid
 import csv
 import os
 import json
+from typing import Dict, List, Any
 from openai import OpenAI
 
-# --- CONFIGURATION ---
+# --- GLOBAL CONFIGURATION ---
 CONFIG_FILE = "benchmark_config.json"
-
-if not os.path.exists(CONFIG_FILE):
-    print(f"❌ Error: {CONFIG_FILE} is missing! Please create it.")
-    exit(1)
-
-with open(CONFIG_FILE, "r") as f:
-    config = json.load(f)
-
-API_BASE_URL = config.get("API_BASE_URL", "http://127.0.0.1:8000/v1")
-API_KEY = config.get("API_KEY", "1234")
-MODELS_TO_TEST = config.get("MODELS_TO_TEST", [])
-
-if not MODELS_TO_TEST:
-    print("❌ Error: MODELS_TO_TEST array is empty in the config file.")
-    exit(1)
-
-TEST_PROMPT = """
-Write a Python script that calculates the factorial of 10 (10!).
-The script must print ONLY the final result exactly in this format:
-Output: <number>
-Do not print intermediate steps.
-"""
-EXPECTED_OUTPUT = "Output: 3628800"
 RESULTS_BASE_DIR = "results"
-# ---------------------
+LIVE_STREAM_FILE = "live_stream.txt"
 
-def extract_python_code(text):
-    match = re.search(r'```python\n(.*?)\n```', text, re.DOTALL)
-    if match: return match.group(1)
-    match = re.search(r'```\n(.*?)\n```', text, re.DOTALL)
-    if match: return match.group(1)
+
+def load_config(config_path: str) -> Dict[str, Any]:
+    """Loads the benchmark configuration from a JSON file."""
+    if not os.path.exists(config_path):
+        print(f"❌ Error: {config_path} is missing! Please create it in the root directory.")
+        exit(1)
+        
+    with open(config_path, "r", encoding="utf-8") as f:
+        config_data = json.load(f)
+        
+    if not config_data.get("MODELS_TO_TEST") or not config_data.get("BENCHMARKS"):
+        print("❌ Error: MODELS_TO_TEST or BENCHMARKS array is empty in config.")
+        exit(1)
+        
+    return config_data
+
+
+def extract_python_code(text: str) -> str:
+    """Extracts Python code from Markdown blocks, or returns raw text if none found."""
+    match = re.search(r"```python\s*(.*?)\s*```", text, re.DOTALL)
+    if match:
+        return match.group(1)
+    match = re.search(r"```\s*(.*?)\s*```", text, re.DOTALL)
+    if match:
+        return match.group(1)
     return text
 
-def save_result(model, ttft, tps, status, csv_path, md_path):
-    """Appends a single benchmark result to the run's CSV and MD files."""
-    csv_exists = os.path.isfile(csv_path)
-    md_exists = os.path.isfile(md_path)
-    
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    
-    # 1. Save to raw CSV
-    with open(csv_path, mode='a', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f)
-        if not csv_exists:
-            writer.writerow(["Timestamp", "Model", "TTFT (s)", "TPS (tokens/s)", "Result Status"])
-        writer.writerow([timestamp, model, f"{ttft:.2f}", f"{tps:.2f}", status])
 
-    # 2. Save to Beautified Markdown
-    with open(md_path, mode='a', encoding='utf-8') as f:
-        if not md_exists:
-            f.write("# 🚀 Apple Silicon LLM Benchmark Report\n\n")
-            f.write(f"> Run Directory: `{os.path.basename(os.path.dirname(md_path))}`\n\n")
-            f.write("## 📊 Results Summary\n\n")
-            f.write("| Timestamp | Model | TTFT (s) | Speed (TPS) | Validation Result |\n")
-            f.write("| :--- | :--- | :---: | :---: | :--- |\n")
+def execute_generated_code(script_path: str, timeout: int = 10) -> tuple[int, str]:
+    """Executes the saved python script and collects output."""
+    try:
+        run_res = subprocess.run(
+            ["python3", script_path], 
+            capture_output=True, 
+            text=True, 
+            timeout=timeout
+        )
+        return run_res.returncode, run_res.stdout.strip()
+    except subprocess.TimeoutExpired:
+        return -1, "TIMEOUT_EXPIRED"
+
+
+def run_single_test(client: OpenAI, model: str, benchmark: Dict[str, Any], scripts_dir: str) -> tuple[str, float]:
+    """Runs a prompt, saves the output to a file, and executes it."""
+    bench_id = benchmark["id"]
+    prompt = benchmark["prompt"]
+    expected = benchmark["expected"]
+    
+    full_prompt = f"{prompt}\n\n[CACHE_MISS_ID: {uuid.uuid4()}]"
+    
+    collected_chunks = []
+    token_count = 0
+    
+    start_time = time.time()
+    first_token_time = None
+    
+    # 1. Initiate Streaming connection to oMLX
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": "You are an expert Python developer. Output only valid, runnable code."},
+            {"role": "user", "content": full_prompt}
+        ],
+        temperature=0.0,
+        stream=True
+    )
+    
+    # 2. Open the streaming pipeline and append characters live
+    with open(LIVE_STREAM_FILE, "a", encoding="utf-8") as sf:
+        sf.write(f"\n\n{'='*50}\n🤖 MODEL: {model}\n⚡ CONFIG: [{bench_id.upper()}]\n{'='*50}\n")
+        sf.flush()
         
-        if "PASS" in status:
-            md_status = f"✅ {status}"
-        elif "FAIL" in status:
-            md_status = f"❌ {status}"
-        else:
-            md_status = f"⚠️ {status}"
+        for chunk in response:
+            if chunk.choices and len(chunk.choices) > 0:
+                content = chunk.choices[0].delta.content
+                if content:
+                    # TRIGGER THE STOPWATCH ON THE VERY FIRST REAL TOKEN
+                    if first_token_time is None:
+                        first_token_time = time.time()
+                        
+                    collected_chunks.append(content)
+                    token_count += 1
+                    sf.write(content)
+                    sf.flush()
+                    
+    end_time = time.time()
+    raw_content = "".join(collected_chunks)
+    
+    # 3. Calculate True Generation TPS (Ignoring TTFT)
+    if first_token_time and token_count > 1:
+        generation_time = end_time - first_token_time
+        # We subtract 1 token because the first token marks the start of the time window
+        tps = (token_count - 1) / generation_time
+    else:
+        tps = 0.0
+    
+    # Extract code and save it to the permanent scripts folder
+    code_to_run = extract_python_code(raw_content)
+    
+    safe_model_name = model.replace("/", "_").replace(":", "_")
+    script_filename = f"{safe_model_name}_{bench_id}.py"
+    script_path = os.path.join(scripts_dir, script_filename)
+    
+    with open(script_path, "w", encoding="utf-8") as f:
+        f.write(code_to_run)
+    
+    # Execute the saved script
+    return_code, script_output = execute_generated_code(script_path)
+    
+    if return_code == 0 and script_output == expected:
+        return "✅", tps
+    elif return_code == -1:
+        return "💥 (Timeout)", tps
+    else:
+        return "❌", tps
+
+
+def generate_reports(matrix_results: Dict[str, Any], benchmarks: List[Dict[str, Any]], run_dir: str) -> None:
+    """Generates both the raw CSV log and the beautified Markdown matrix table."""
+    csv_path = os.path.join(run_dir, "benchmark_results.csv")
+    md_path = os.path.join(run_dir, "matrix_report.md")
+    
+    bench_ids = [b["id"] for b in benchmarks]
+    
+    with open(csv_path, mode="w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        header = ["Model"] + [f"{b_id.upper()} Status" for b_id in bench_ids] + [f"{b_id.upper()} TPS" for b_id in bench_ids]
+        writer.writerow(header)
+        
+        for model, res in matrix_results.items():
+            row = [model] + [res[b_id] for b_id in bench_ids] + [f"{tps:.2f}" for tps in res["tps_list"]]
+            writer.writerow(row)
+
+    # Clean Markdown generation without HTML tags
+    with open(md_path, mode="w", encoding="utf-8") as f:
+        f.write("# 📊 Local Inference Performance - Detailed Matrix Report\n\n")
+        f.write(f"> Run Directory / Unix Timestamp: `{os.path.basename(run_dir)}`\n\n")
+        
+        columns = [f"{b_id.upper()} (Status & Speed)" for b_id in bench_ids]
+        f.write(f"| Model Name | {' | '.join(columns)} |\n")
+        f.write(f"| :--- | {' | '.join([':---:'] * len(bench_ids))} |\n")
+        
+        for model, res in matrix_results.items():
+            cells = []
+            for idx, b_id in enumerate(bench_ids):
+                status = res[b_id]
+                tps = res["tps_list"][idx] if idx < len(res["tps_list"]) else 0.0
+                cells.append(f"{status} ({tps:.1f} t/s)")
             
-        f.write(f"| {timestamp} | `{model}` | **{ttft:.2f}** | **{tps:.2f}** | {md_status} |\n")
+            f.write(f"| **{model}** | {' | '.join(cells)} |\n")
+
 
 def run_benchmark():
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-
-    # --- FOLDER SETUP ---
+    """Main entry point for the tester CLI command."""
+    config = load_config(CONFIG_FILE)
+    
+    with open(LIVE_STREAM_FILE, "w", encoding="utf-8") as f:
+        pass
+        
     run_timestamp = str(int(time.time()))
     run_dir = os.path.join(RESULTS_BASE_DIR, run_timestamp)
-    os.makedirs(run_dir, exist_ok=True)
     
-    csv_file = os.path.join(run_dir, "benchmark_results.csv")
-    md_file = os.path.join(run_dir, "benchmark_report.md")
-    # --------------------
+    # Create the main directory AND the scripts subdirectory
+    scripts_dir = os.path.join(run_dir, "scripts")
+    os.makedirs(scripts_dir, exist_ok=True)
+    
+    client = OpenAI(
+        base_url=config.get("API_BASE_URL", "http://127.0.0.1:8000/v1"), 
+        api_key=config.get("API_KEY", "1234")
+    )
+    
+    models = config["MODELS_TO_TEST"]
+    benchmarks = config["BENCHMARKS"]
+    
+    matrix_results = {
+        model: {b["id"]: "❌" for b in benchmarks} for model in models
+    }
+    for model in models:
+        matrix_results[model]["tps_list"] = []
 
-    print("🚀 Starting Cache-Busting Deterministic Benchmark...")
-    print(f"📁 Session data will be saved to: {run_dir}/\n")
+    print("🚀 Starting Automated Multi-Level Matrix Benchmark...")
+    print(f"📁 Target Run Directory: {run_dir}/")
+    print(f"📺 Live stream pipeline opened at: ./{LIVE_STREAM_FILE}\n")
     
-    for model_name in MODELS_TO_TEST:
+    for model in models:
         print("=" * 60)
-        print(f"🧪 Testing Model: {model_name}")
+        print(f"🤖 Activating Target: {model}")
         print("=" * 60)
         
-        status_message = "Unknown"
-        ttft = 0.0
-        tps = 0.0
-        
-        try:
-            start_time = time.time()
-            first_token_time = None
-            token_count = 0
-            full_response = ""
+        for bench in benchmarks:
+            bench_id = bench["id"]
+            print(f"  ⚡ Running [{bench_id.upper()}] configuration...")
             
-            unique_id = str(uuid.uuid4())
-            system_prompt = f"You are an expert Python developer. Output only valid, runnable code. [CACHE_MISS_ID: {unique_id}]"
+            # Pass the scripts_dir so the function knows where to save the files
+            status, tps = run_single_test(client, model, bench, scripts_dir)
             
-            print(f"🧹 Cache Buster Injected: {unique_id[:8]}...")
+            matrix_results[model][bench_id] = status
+            matrix_results[model]["tps_list"].append(tps)
             
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": TEST_PROMPT}
-                ],
-                stream=True
-            )
+            print(f"    Result: {status} | Execution Speed: {tps:.2f} tokens/s")
             
-            print("Generating:\n", flush=True)
-            
-            for chunk in response:
-                if first_token_time is None:
-                    first_token_time = time.time()
-                    
-                if chunk.choices[0].delta.content:
-                    content = chunk.choices[0].delta.content
-                    print(content, end="", flush=True) 
-                    full_response += content
-                    token_count += 1
-                    
-            end_time = time.time()
-            
-            if first_token_time:
-                ttft = first_token_time - start_time
-                generation_time = end_time - first_token_time
-                tps = token_count / generation_time if generation_time > 0 else 0
-            
-            print("\n\n📊 Metrics:")
-            print(f"Time to First Token (TTFT): {ttft:.2f} s")
-            print(f"Speed (TPS):                {tps:.2f} tokens/s")
-            
-            print("\n💾 Executing generated code...")
-            code_to_run = extract_python_code(full_response)
-            safe_model_name = model_name.replace("/", "_")
-            
-            # Save the python script inside the timestamped results folder
-            filename = os.path.join(run_dir, f"generated_{safe_model_name}.py")
-            
-            with open(filename, "w", encoding="utf-8") as f:
-                f.write(code_to_run)
-                
-            result = subprocess.run(
-                ["python3", filename], 
-                capture_output=True, 
-                text=True,
-                timeout=15 
-            )
-            
-            if result.returncode == 0:
-                stdout_lower = result.stdout.strip().lower()
-                expected_lower = EXPECTED_OUTPUT.lower()
-                
-                if expected_lower in stdout_lower:
-                    status_message = "PASS - Logic Flawless"
-                    print(f"✅ RESULT: {status_message}")
-                else:
-                    status_message = f"FAIL - Wrong Output (Got: {result.stdout.strip()})"
-                    print(f"❌ RESULT: {status_message}")
-            else:
-                status_message = "FAIL - Syntax/Runtime Crash"
-                print(f"❌ RESULT: {status_message}")
+        print(f"🧹 Unloading {model} data... breathing for 3s...")
+        time.sleep(3)
 
-        except subprocess.TimeoutExpired:
-            status_message = "FAIL - Timeout (Infinite Loop)"
-            print(f"\n⚠️ RESULT: {status_message}")
-        except Exception as e:
-            status_message = "ERROR - API/Script Failure"
-            print(f"\n❌ Error with {model_name}: {e}\n")
-            
-        finally:
-            save_result(model_name, ttft, tps, status_message, csv_file, md_file)
-            print("-" * 40)
-            time.sleep(3)
+    print("\n💾 Compilation of results initiated...")
+    generate_reports(matrix_results, benchmarks, run_dir)
+    print(f"🎉 Benchmark execution successful! Check: {run_dir}/matrix_report.md")
+
 
 if __name__ == "__main__":
     run_benchmark()

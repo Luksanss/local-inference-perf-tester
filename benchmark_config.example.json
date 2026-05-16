@@ -11,5 +11,22 @@
     "Qwen2.5-Coder-7B-Instruct-4bit",
     "Qwen2.5-Coder-7B-Instruct-MLX-4bit",
     "Phi-3.5-mini-instruct-4bit"
+  ],
+  "BENCHMARKS": [
+    {
+      "id": "easy",
+      "prompt": "Write a Python script that calculates the factorial of 10 (10!).\nThe script must print ONLY the final result exactly in this format:\nOutput: <number>\nDo not print intermediate steps.",
+      "expected": "Output: 3628800"
+    },
+    {
+      "id": "medium",
+      "prompt": "Write a Python script that implements a simple Run-Length Encoding (RLE) string compressor.\nThe script must take the hardcoded string \"WWWWWWWWWWWWBWWWWWWWWWWWWBBBWWWWWWWWWWWWWWWWWWWWWWWWB\" and compress it into a format where repeating characters are replaced by the character followed by its count.\n\nThe script must print ONLY the final compressed string exactly in this format:\nOutput: <compressed_string>\nDo not print intermediate steps or explanations.",
+      "expected": "Output: W12B1W12B3W24B1"
+    },
+    {
+      "id": "hard",
+      "prompt": "Write a Python script that processes a hardcoded JSON string containing user orders and calculates the total revenue.\n\nThe hardcoded JSON string is:\n'[{\"id\": 1, \"item\": \"A\", \"price\": 10.5, \"qty\": 2}, {\"id\": 2, \"item\": \"B\", \"price\": 20.0, \"qty\": 1}, {\"id\": 3, \"item\": \"C\", \"price\": 5.0, \"qty\": 5}]'\n\nThe script must:\n1. Parse the JSON string.\n2. Calculate the total revenue (price * qty for each item).\n3. Print ONLY the final total revenue exactly in this format:\nOutput: <total_float_with_two_decimals>\n\nDo not print any code explanations, markdown formatting inside the execution, or intermediate steps.",
+      "expected": "Output: 66.00"
+    }
   ]
 }

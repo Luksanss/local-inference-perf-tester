@@ -53,3 +53,8 @@ results/
 # Configuration
 # =========================
 benchmark_config.json
+
+# =========================
+# Streaming pipeline
+# =========================
+live_stream.txt
