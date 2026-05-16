@@ -15,18 +15,23 @@
   "BENCHMARKS": [
     {
       "id": "easy",
-      "prompt": "Write a Python script that calculates the factorial of 10 (10!).\nThe script must print ONLY the final result exactly in this format:\nOutput: <number>\nDo not print intermediate steps.",
-      "expected": "Output: 3628800"
+      "prompt": "Write a Python script that calculates the factorial of 10 (10!).\nThe script must print ONLY the final result exactly in this format:\n<number>\nDo not print intermediate steps.",
+      "expected": "3628800"
     },
     {
       "id": "medium",
-      "prompt": "Write a Python script that implements a simple Run-Length Encoding (RLE) string compressor.\nThe script must take the hardcoded string \"WWWWWWWWWWWWBWWWWWWWWWWWWBBBWWWWWWWWWWWWWWWWWWWWWWWWB\" and compress it into a format where repeating characters are replaced by the character followed by its count.\n\nThe script must print ONLY the final compressed string exactly in this format:\nOutput: <compressed_string>\nDo not print intermediate steps or explanations.",
-      "expected": "Output: W12B1W12B3W24B1"
+      "prompt": "Write a Python script that implements a simple Run-Length Encoding (RLE) string compressor.\nThe script must take the hardcoded string \"WWWWWWWWWWWWBWWWWWWWWWWWWBBBWWWWWWWWWWWWWWWWWWWWWWWWB\" and compress it into a format where repeating characters are replaced by the character followed by its count.\n\nThe script must print ONLY the final compressed string exactly in this format:\n<compressed_string>\nDo not print intermediate steps or explanations.",
+      "expected": "W12B1W12B3W24B1"
     },
     {
       "id": "hard",
-      "prompt": "Write a Python script that processes a hardcoded JSON string containing user orders and calculates the total revenue.\n\nThe hardcoded JSON string is:\n'[{\"id\": 1, \"item\": \"A\", \"price\": 10.5, \"qty\": 2}, {\"id\": 2, \"item\": \"B\", \"price\": 20.0, \"qty\": 1}, {\"id\": 3, \"item\": \"C\", \"price\": 5.0, \"qty\": 5}]'\n\nThe script must:\n1. Parse the JSON string.\n2. Calculate the total revenue (price * qty for each item).\n3. Print ONLY the final total revenue exactly in this format:\nOutput: <total_float_with_two_decimals>\n\nDo not print any code explanations, markdown formatting inside the execution, or intermediate steps.",
-      "expected": "Output: 66.00"
+      "prompt": "Write a Python script that processes a hardcoded JSON string containing user orders and calculates the total revenue.\n\nThe hardcoded JSON string is:\n'[{\"id\": 1, \"item\": \"A\", \"price\": 10.5, \"qty\": 2}, {\"id\": 2, \"item\": \"B\", \"price\": 20.0, \"qty\": 1}, {\"id\": 3, \"item\": \"C\", \"price\": 5.0, \"qty\": 5}]'\n\nThe script must:\n1. Parse the JSON string.\n2. Calculate the total revenue (price * qty for each item).\n3. Print ONLY the final total revenue exactly in this format:\n<total_float_with_two_decimals>\n\nDo not print any code explanations, markdown formatting inside the execution, or intermediate steps.",
+      "expected": "66.00"
+    }, 
+    {
+      "id": "impossible",
+      "prompt": "You are subjected to a massive context window test. Below is a JSON array containing over 300 objects. Your task is to act as the parser. Read through the payload using your attention mechanism, find the single object where 'id' is exactly 'N33DLE', and extract its 'secret' value.\n\nDo NOT write a Python script that parses a file. You must find the secret yourself right now. Write a 2-line Python script that simply prints the exact secret you found in this format:\n<secret>\n\nHere is the data payload:\n\n{{HAYSTACK_PAYLOAD}}",
+      "expected": "OMEGA_PROTOCOL_88"
     }
   ]
 }
